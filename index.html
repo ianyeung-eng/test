@@ -275,7 +275,7 @@
       </a>
       <button id="connectBtn" title="連接到 micro:bit">CONNECT</button>
     </div>
-    <div id="bluetoothWarning">⚠️ 此瀏覽器不支援藍牙連線，請使用手機 Chrome 瀏覽器。</div>
+    <div id="bluetoothWarning"></div>
     <div class="container">
       <h1>Image Recognition</h1>
 
@@ -309,10 +309,32 @@
       // Check Bluetooth support
       const connectBtn = document.getElementById("connectBtn");
       const bluetoothWarning = document.getElementById("bluetoothWarning");
-      if (!navigator.bluetooth) {
-        connectBtn.style.display = "none";
-        bluetoothWarning.style.display = "block";
+      function checkBluetoothSupport() {
+        if (!navigator.bluetooth) {
+          connectBtn.style.display = "none";
+          bluetoothWarning.style.display = "block";
+          bluetoothWarning.innerText = "⚠️ 此瀏覽器不支援藍牙連線，請使用手機 Chrome 瀏覽器（Android 6.0+）。";
+        } else if (window.location.protocol !== "https:" && window.location.hostname !== "localhost") {
+          connectBtn.style.display = "none";
+          bluetoothWarning.style.display = "block";
+          bluetoothWarning.innerText = "⚠️ 藍牙功能需在 HTTPS 或 localhost 環境運行，請檢查網站協議。";
+        } else {
+          navigator.bluetooth.getAvailability().then(available => {
+            if (!available) {
+              connectBtn.style.display = "none";
+              bluetoothWarning.style.display = "block";
+              bluetoothWarning.innerText = "⚠️ 請開啟設備藍牙並確保 Chrome 已授予藍牙權限。";
+            } else {
+              connectBtn.style.display = "block";
+              bluetoothWarning.style.display = "none";
+            }
+          }).catch(() => {
+            connectBtn.style.display = "block";
+            bluetoothWarning.style.display = "none";
+          });
+        }
       }
+      checkBluetoothSupport();
 
       // Bind button events
       connectBtn.addEventListener("click", connectButtonPressed);
@@ -329,10 +351,7 @@
         try {
           console.log("Requesting Bluetooth Device...");
           uBitDevice = await navigator.bluetooth.requestDevice({
-            filters: [
-              { namePrefix: "Calliope mini" },
-              { namePrefix: "BBC micro:bit" }
-            ],
+            filters: [{ namePrefix: "BBC micro:bit" }],
             optionalServices: [UART_SERVICE_UUID],
           });
 
@@ -457,13 +476,37 @@
 
       async function setupWebcam() {
         try {
+          // Check HTTPS
+          if (window.location.protocol !== "https:" && window.location.hostname !== "localhost") {
+            updateStatus("Webcam 功能需在 HTTPS 或 localhost 環境運行", true);
+            return;
+          }
+
+          // Check camera availability
+          if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            updateStatus("此瀏覽器不支援攝影機，請檢查瀏覽器或設備設置", true);
+            return;
+          }
+
           document.getElementById("webcamBtn").disabled = true;
           document.getElementById("webcamSpinner").style.display = "block";
-          webcam = new tmImage.Webcam(200, 200, true); // Reduced resolution for mobile
-          const videoElement = webcam.webcam; // Access the video element
+
+          // Initialize webcam with explicit constraints
+          webcam = new tmImage.Webcam(200, 200, true); // width, height, flip
+          const videoElement = webcam.webcam;
           videoElement.setAttribute("playsinline", true); // Required for Safari
-          await webcam.setup(); // Request webcam access
+
+          // Request camera with rear-facing preference
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: { 
+              facingMode: "environment", // Prefer rear camera
+              width: { ideal: 200 },
+              height: { ideal: 200 }
+            }
+          });
+          webcam.webcam.srcObject = stream;
           await webcam.play();
+
           document.getElementById("webcam-container").appendChild(webcam.canvas);
           labelContainer = document.getElementById("predictions");
           for (let i = 0; i < maxPredictions; i++) {
@@ -483,7 +526,15 @@
           }
         } catch (error) {
           console.error('Error accessing webcam:', error);
-          updateStatus("Webcam 啟動失敗: " + error.message, true);
+          let errorMessage = "Webcam 啟動失敗: " + error.message;
+          if (error.name === "NotAllowedError") {
+            errorMessage = "Webcam 啟動失敗: 請允許攝影機權限";
+          } else if (error.name === "NotFoundError") {
+            errorMessage = "Webcam 啟動失敗: 未找到可用攝影機";
+          } else if (error.name === "NotReadableError") {
+            errorMessage = "Webcam 啟動失敗: 攝影機被其他應用程式佔用";
+          }
+          updateStatus(errorMessage, true);
         } finally {
           document.getElementById("webcamBtn").disabled = false;
           document.getElementById("webcamSpinner").style.display = "none";
