@@ -134,6 +134,10 @@
       #connectBtn {
         background: #28A745;
       }
+      #switchCameraBtn {
+        background: #17A2B8;
+        margin-top: 10px;
+      }
       #bluetoothWarning {
         display: none;
         padding: 10px;
@@ -146,7 +150,8 @@
       }
       #webcam-container {
         display: flex;
-        justify-content: center;
+        flex-direction: column;
+        align-items: center;
         margin: 10px 0;
         overflow: hidden;
       }
@@ -272,6 +277,14 @@
           max-width: 180px;
           max-height: 180px;
         }
+        #switchCameraBtn {
+          display: block; /* Show on mobile */
+        }
+      }
+      @media (min-width: 501px) {
+        #switchCameraBtn {
+          display: none; /* Hide on desktop */
+        }
       }
     </style>
 </head>
@@ -296,7 +309,9 @@
 
       <div class="section">
         <h2>Webcam Preview</h2>
-        <div id="webcam-container"></div>
+        <div id="webcam-container">
+          <button id="switchCameraBtn" title="切換前後攝影機" disabled>Switch to Front Camera</button>
+        </div>
         <button id="webcamBtn" title="開啟 webcam 進行圖像辨識" disabled>Open Webcam</button>
         <div id="predictions"></div>
         <div id="webcamSpinner" class="spinner"></div>
@@ -315,6 +330,7 @@
       let videoElement = null;
       let canvasElement = null;
       let stream = null;
+      let currentFacingMode = "environment"; // Default to rear camera
 
       // Check Bluetooth support
       const connectBtn = document.getElementById("connectBtn");
@@ -356,6 +372,9 @@
       document.getElementById("modelInput").addEventListener("keypress", (e) => {
         if (e.key === "Enter") loadModel();
       });
+      const switchCameraBtn = document.getElementById("switchCameraBtn");
+      switchCameraBtn.addEventListener("click", switchCamera);
+      switchCameraBtn.addEventListener("touchstart", switchCamera);
 
       async function connectButtonPressed() {
         try {
@@ -484,6 +503,63 @@
         }
       }
 
+      async function startCamera(facingMode) {
+        try {
+          // Stop previous stream if exists
+          if (stream) {
+            stream.getTracks().forEach(track => track.stop());
+            stream = null;
+          }
+
+          // Try to access camera
+          let targetWidth = 192;
+          let targetHeight = 192;
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({
+              video: { 
+                facingMode: facingMode,
+                width: { ideal: 192 },
+                height: { ideal: 192 }
+              }
+            });
+          } catch (error) {
+            console.warn(`Failed to access ${facingMode} camera, trying lower resolution:`, error);
+            stream = await navigator.mediaDevices.getUserMedia({
+              video: { 
+                facingMode: facingMode,
+                width: { ideal: 160 },
+                height: { ideal: 160 }
+              }
+            });
+            targetWidth = 160;
+            targetHeight = 160;
+          }
+
+          videoElement.srcObject = stream;
+          canvasElement.width = targetWidth;
+          canvasElement.height = targetHeight;
+
+          // Wait for video to be ready
+          await new Promise(resolve => {
+            videoElement.onloadedmetadata = () => resolve();
+          });
+
+          return true;
+        } catch (error) {
+          console.error(`Error accessing ${facingMode} camera:`, error);
+          let errorMessage = `切換到${facingMode === "environment" ? "後置" : "前置"}攝影機失敗: ${error.message}`;
+          if (error.name === "NotAllowedError") {
+            errorMessage = "Webcam 啟動失敗: 請允許攝影機權限";
+          } else if (error.name === "NotFoundError") {
+            errorMessage = `無可用${facingMode === "environment" ? "後置" : "前置"}攝影機`;
+          } else if (error.name === "NotReadableError") {
+            errorMessage = "Webcam 啟動失敗: 攝影機被其他應用程式佔用";
+          }
+          updateStatus(errorMessage, true);
+          return false;
+        }
+      }
+
       async function setupWebcam() {
         try {
           // Check HTTPS
@@ -513,12 +589,7 @@
           // Clear previous webcam content
           const webcamContainer = document.getElementById("webcam-container");
           webcamContainer.innerHTML = "";
-
-          // Stop previous stream if exists
-          if (stream) {
-            stream.getTracks().forEach(track => track.stop());
-            stream = null;
-          }
+          webcamContainer.appendChild(switchCameraBtn); // Re-append switch button
 
           // Create video element
           videoElement = document.createElement("video");
@@ -534,47 +605,21 @@
           canvasElement.height = 192;
           const ctx = canvasElement.getContext("2d");
 
-          // Try to access camera (prefer rear, fallback to any)
-          try {
-            stream = await navigator.mediaDevices.getUserMedia({
-              video: { 
-                facingMode: "environment",
-                width: { ideal: 192 },
-                height: { ideal: 192 }
-              }
-            });
-          } catch (rearError) {
-            console.warn("Rear camera failed, trying any camera:", rearError);
-            try {
-              stream = await navigator.mediaDevices.getUserMedia({
-                video: { 
-                  width: { ideal: 192 },
-                  height: { ideal: 192 }
-                }
-              });
-            } catch (fallbackError) {
-              console.warn("Fallback camera failed, trying lower resolution:", fallbackError);
-              stream = await navigator.mediaDevices.getUserMedia({
-                video: { 
-                  width: { ideal: 160 },
-                  height: { ideal: 160 }
-                }
-              });
-              canvasElement.width = 160;
-              canvasElement.height = 160;
-            }
+          // Start camera with default facingMode
+          const success = await startCamera(currentFacingMode);
+          if (!success) {
+            document.getElementById("webcamBtn").disabled = false;
+            document.getElementById("webcamSpinner").style.display = "none";
+            return;
           }
 
-          videoElement.srcObject = stream;
           webcamContainer.appendChild(videoElement);
           webcamContainer.appendChild(canvasElement);
 
-          // Wait for video to be ready
-          await new Promise(resolve => {
-            videoElement.onloadedmetadata = () => resolve();
-          });
-
           updateStatus("Webcam 已成功啟動", false);
+          switchCameraBtn.disabled = false;
+          switchCameraBtn.innerText = currentFacingMode === "environment" ? "Switch to Front Camera" : "Switch to Rear Camera";
+
           if (model && !isPredicting) {
             window.requestAnimationFrame(loop);
             isPredicting = true;
@@ -605,6 +650,46 @@
           updateStatus(errorMessage, true);
         } finally {
           document.getElementById("webcamBtn").disabled = false;
+          document.getElementById("webcamSpinner").style.display = "none";
+        }
+      }
+
+      async function switchCamera() {
+        try {
+          switchCameraBtn.disabled = true;
+          document.getElementById("webcamSpinner").style.display = "block";
+
+          // Toggle facingMode
+          currentFacingMode = currentFacingMode === "environment" ? "user" : "environment";
+
+          // Check available cameras
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          const videoDevices = devices.filter(device => device.kind === 'videoinput');
+          console.log("Available video devices for switch:", videoDevices);
+          if (videoDevices.length < 2) {
+            updateStatus(`無可用${currentFacingMode === "environment" ? "後置" : "前置"}攝影機`, true);
+            currentFacingMode = currentFacingMode === "environment" ? "user" : "environment"; // Revert
+            switchCameraBtn.disabled = false;
+            document.getElementById("webcamSpinner").style.display = "none";
+            return;
+          }
+
+          // Start camera with new facingMode
+          const success = await startCamera(currentFacingMode);
+          if (success) {
+            switchCameraBtn.innerText = currentFacingMode === "environment" ? "Switch to Front Camera" : "Switch to Rear Camera";
+            updateStatus(`已切換到${currentFacingMode === "environment" ? "後置" : "前置"}攝影機`, false);
+          } else {
+            currentFacingMode = currentFacingMode === "environment" ? "user" : "environment"; // Revert
+            switchCameraBtn.innerText = currentFacingMode === "environment" ? "Switch to Front Camera" : "Switch to Rear Camera";
+          }
+        } catch (error) {
+          console.error('Error switching camera:', error);
+          updateStatus("切換攝影機失敗: " + error.message, true);
+          currentFacingMode = currentFacingMode === "environment" ? "user" : "environment"; // Revert
+          switchCameraBtn.innerText = currentFacingMode === "environment" ? "Switch to Front Camera" : "Switch to Rear Camera";
+        } finally {
+          switchCameraBtn.disabled = false;
           document.getElementById("webcamSpinner").style.display = "none";
         }
       }
