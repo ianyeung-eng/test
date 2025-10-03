@@ -150,8 +150,8 @@
         margin: 10px 0;
       }
       #webcam-container canvas {
-        width: 200px;
-        height: 200px;
+        width: 192px;
+        height: 192px;
         border-radius: 8px;
         box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
       }
@@ -313,7 +313,7 @@
         if (!navigator.bluetooth) {
           connectBtn.style.display = "none";
           bluetoothWarning.style.display = "block";
-          bluetoothWarning.innerText = "⚠️ 此瀏覽器不支援藍牙連線，請使用手機 Chrome 瀏覽器（Android 6.0+）。";
+          bluetoothWarning.innerText = "⚠️ 此瀏覽器不支援藍牙連線，請使用 Chrome 瀏覽器（Android 6.0+ 或桌面）。";
         } else if (window.location.protocol !== "https:" && window.location.hostname !== "localhost") {
           connectBtn.style.display = "none";
           bluetoothWarning.style.display = "block";
@@ -488,22 +488,42 @@
             return;
           }
 
+          // Log available devices
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          const videoDevices = devices.filter(device => device.kind === 'videoinput');
+          console.log("Available video devices:", videoDevices);
+          if (videoDevices.length === 0) {
+            updateStatus("未找到可用攝影機，請檢查設備", true);
+            return;
+          }
+
           document.getElementById("webcamBtn").disabled = true;
           document.getElementById("webcamSpinner").style.display = "block";
 
-          // Initialize webcam with explicit constraints
-          webcam = new tmImage.Webcam(200, 200, true); // width, height, flip
+          // Initialize webcam
+          webcam = new tmImage.Webcam(192, 192, true); // Reduced resolution
           const videoElement = webcam.webcam;
           videoElement.setAttribute("playsinline", true); // Required for Safari
 
-          // Request camera with rear-facing preference
-          const stream = await navigator.mediaDevices.getUserMedia({
-            video: { 
-              facingMode: "environment", // Prefer rear camera
-              width: { ideal: 200 },
-              height: { ideal: 200 }
-            }
-          });
+          // Try to access camera (prefer rear, fallback to any)
+          let stream;
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({
+              video: { 
+                facingMode: "environment", // Prefer rear camera
+                width: { ideal: 192 },
+                height: { ideal: 192 }
+              }
+            });
+          } catch (rearError) {
+            console.warn("Rear camera failed, trying any camera:", rearError);
+            stream = await navigator.mediaDevices.getUserMedia({
+              video: { 
+                width: { ideal: 192 },
+                height: { ideal: 192 }
+              }
+            });
+          }
           webcam.webcam.srcObject = stream;
           await webcam.play();
 
