@@ -149,7 +149,7 @@
         justify-content: center;
         margin: 10px 0;
       }
-      #webcam-container canvas {
+      #webcam-container video, #webcam-container canvas {
         width: 192px;
         height: 192px;
         border-radius: 8px;
@@ -261,7 +261,7 @@
         .prediction-bar {
           width: 80px;
         }
-        #webcam-container canvas {
+        #webcam-container video, #webcam-container canvas {
           width: 180px;
           height: 180px;
         }
@@ -305,6 +305,8 @@
       let rxCharacteristic;
       let model, webcam, labelContainer, maxPredictions, lastSentClass = null;
       let isPredicting = false;
+      let videoElement = null;
+      let canvasElement = null;
 
       // Check Bluetooth support
       const connectBtn = document.getElementById("connectBtn");
@@ -500,10 +502,18 @@
           document.getElementById("webcamBtn").disabled = true;
           document.getElementById("webcamSpinner").style.display = "block";
 
-          // Initialize webcam
-          webcam = new tmImage.Webcam(192, 192, true); // Reduced resolution
-          const videoElement = webcam.webcam;
-          videoElement.setAttribute("playsinline", true); // Required for Safari
+          // Create video element manually
+          videoElement = document.createElement("video");
+          videoElement.width = 192;
+          videoElement.height = 192;
+          videoElement.autoplay = true;
+          videoElement.playsinline = true; // Required for Safari
+
+          // Create canvas for model prediction
+          canvasElement = document.createElement("canvas");
+          canvasElement.width = 192;
+          canvasElement.height = 192;
+          const ctx = canvasElement.getContext("2d");
 
           // Try to access camera (prefer rear, fallback to any)
           let stream;
@@ -517,17 +527,41 @@
             });
           } catch (rearError) {
             console.warn("Rear camera failed, trying any camera:", rearError);
-            stream = await navigator.mediaDevices.getUserMedia({
-              video: { 
-                width: { ideal: 192 },
-                height: { ideal: 192 }
-              }
-            });
+            try {
+              stream = await navigator.mediaDevices.getUserMedia({
+                video: { 
+                  width: { ideal: 192 },
+                  height: { ideal: 192 }
+                }
+              });
+            } catch (fallbackError) {
+              console.warn("Fallback camera failed, trying lower resolution:", fallbackError);
+              stream = await navigator.mediaDevices.getUserMedia({
+                video: { 
+                  width: { ideal: 160 },
+                  height: { ideal: 160 }
+                }
+              });
+              canvasElement.width = 160;
+              canvasElement.height = 160;
+            }
           }
-          webcam.webcam.srcObject = stream;
-          await webcam.play();
 
-          document.getElementById("webcam-container").appendChild(webcam.canvas);
+          videoElement.srcObject = stream;
+          document.getElementById("webcam-container").appendChild(videoElement);
+          document.getElementById("webcam-container").appendChild(canvasElement);
+
+          // Wait for video to be ready
+          await new Promise(resolve => {
+            videoElement.onloadedmetadata = () => resolve();
+          });
+
+          updateStatus("Webcam 已成功啟動", false);
+          if (model && !isPredicting) {
+            window.requestAnimationFrame(loop);
+            isPredicting = true;
+          }
+
           labelContainer = document.getElementById("predictions");
           for (let i = 0; i < maxPredictions; i++) {
             const item = document.createElement("div");
@@ -538,11 +572,6 @@
               <progress class="prediction-bar" value="0" max="100"></progress>
             `;
             labelContainer.appendChild(item);
-          }
-          updateStatus("Webcam 已成功啟動", false);
-          if (model && !isPredicting) {
-            window.requestAnimationFrame(loop);
-            isPredicting = true;
           }
         } catch (error) {
           console.error('Error accessing webcam:', error);
@@ -562,8 +591,9 @@
       }
 
       async function loop() {
-        if (webcam && model) {
-          webcam.update(); // Update the webcam frame
+        if (videoElement && model && canvasElement) {
+          const ctx = canvasElement.getContext("2d");
+          ctx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
           await predict();
         } else {
           updateStatus("等待 Webcam 或模型初始化...", true);
@@ -572,7 +602,7 @@
       }
 
       async function predict() {
-        const prediction = await model.predict(webcam.canvas);
+        const prediction = await model.predict(canvasElement);
         let maxProb = 0;
         let maxIndex = 0;
         for (let i = 0; i < maxPredictions; i++) {
