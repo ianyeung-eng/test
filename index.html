@@ -1,43 +1,4 @@
-<script type="text/javascript">
-        var gk_isXlsx = false;
-        var gk_xlsxFileLookup = {};
-        var gk_fileData = {};
-        function filledCell(cell) {
-          return cell !== '' && cell != null;
-        }
-        function loadFileData(filename) {
-        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
-            try {
-                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
-                var firstSheetName = workbook.SheetNames[0];
-                var worksheet = workbook.Sheets[firstSheetName];
-
-                // Convert sheet to JSON to filter blank rows
-                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
-                // Filter out blank rows (rows where all cells are empty, null, or undefined)
-                var filteredData = jsonData.filter(row => row.some(filledCell));
-
-                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
-                var headerRowIndex = filteredData.findIndex((row, index) =>
-                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
-                );
-                // Fallback
-                if (headerRowIndex === -1 || headerRowIndex > 25) {
-                  headerRowIndex = 0;
-                }
-
-                // Convert filtered JSON back to CSV
-                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
-                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
-                return csv;
-            } catch (e) {
-                console.error(e);
-                return "";
-            }
-        }
-        return gk_fileData[filename] || "";
-        }
-        </script><!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -142,6 +103,12 @@
       #switchCameraBtn {
         background: #17A2B8;
         margin-top: 10px;
+      }
+      #startGameBtn {
+        background: #FF851B;
+      }
+      #resetGameBtn {
+        background: #DC3545;
       }
       #bluetoothWarning {
         display: none;
@@ -248,6 +215,30 @@
         0% { transform: rotate(0deg); }
         100% { transform: rotate(360deg); }
       }
+      #gameStatus {
+        text-align: center;
+        font-size: 16px;
+        margin: 10px 0;
+      }
+      #targetClass {
+        font-weight: bold;
+        color: #007BFF;
+      }
+      #timer {
+        font-weight: bold;
+        color: #28A745;
+      }
+      #matchCount {
+        font-weight: bold;
+        color: #FF851B;
+      }
+      #gameResult {
+        display: none;
+        text-align: center;
+        font-size: 16px;
+        margin: 10px 0;
+        color: #28A745;
+      }
       @media (max-width: 500px) {
         .container {
           max-width: 95%;
@@ -324,6 +315,18 @@
         <div id="predictions"></div>
         <div id="webcamSpinner" class="spinner"></div>
       </div>
+
+      <div class="section" id="gameSection">
+        <h2>Matching Game</h2>
+        <button id="startGameBtn" title="開始遊戲" disabled>Start Game</button>
+        <button id="resetGameBtn" title="重置遊戲" disabled>Reset Game</button>
+        <div id="gameStatus">
+          <p>Target: <span id="targetClass"></span></p>
+          <p>Matches: <span id="matchCount">0</span>/10</p>
+          <p>Time: <span id="timer">0</span> seconds</p>
+        </div>
+        <div id="gameResult"></div>
+      </div>
     </div>
 
     <script>
@@ -340,6 +343,14 @@
       let canvasElement = null;
       let stream = null;
       let currentFacingMode = "environment"; // Default to rear camera
+
+      // Game variables
+      let isGameMode = false;
+      let classNames = [];
+      let currentTarget = "";
+      let matchCount = 0;
+      let gameStartTime = null;
+      let gameTimerInterval = null;
 
       // Check Bluetooth and Serial support
       const connectBtn = document.getElementById("connectBtn");
@@ -405,6 +416,8 @@
       const switchCameraBtn = document.getElementById("switchCameraBtn");
       switchCameraBtn.addEventListener("click", switchCamera);
       switchCameraBtn.addEventListener("touchstart", switchCamera);
+      document.getElementById("startGameBtn").addEventListener("click", startGame);
+      document.getElementById("resetGameBtn").addEventListener("click", resetGame);
 
       async function connectBluetooth() {
         try {
@@ -557,9 +570,14 @@
           document.getElementById("modelSpinner").style.display = "block";
           model = await tmImage.load(modelUrl, metadataUrl);
           maxPredictions = model.getTotalClasses();
-          console.log('Model loaded, classes:', maxPredictions);
+          classNames = []; // Get class names
+          for (let i = 0; i < maxPredictions; i++) {
+            classNames.push(model.getClassLabel(i)); // Assuming tmImage has getClassLabel method; adjust if needed
+          }
+          console.log('Model loaded, classes:', classNames);
           updateStatus("模型已成功載入", false);
           document.getElementById("webcamBtn").disabled = false;
+          document.getElementById("startGameBtn").disabled = false; // Enable game button after model load
         } catch (error) {
           console.error('Error loading model:', error);
           updateStatus("模型載入失敗: " + error.message, true);
@@ -775,6 +793,7 @@
         const prediction = await model.predict(canvasElement);
         let maxProb = 0;
         let maxIndex = 0;
+        let highestClass = "";
         for (let i = 0; i < maxPredictions; i++) {
           const prob = (prediction[i].probability * 100).toFixed(2);
           const item = labelContainer.childNodes[i];
@@ -785,12 +804,92 @@
           if (prob > maxProb) {
             maxProb = prob;
             maxIndex = i;
+            highestClass = prediction[i].className;
           }
           if (prediction[i].probability >= 0.995 && prediction[i].className !== lastSentClass) {
             await sendData(prediction[i].className);
             lastSentClass = prediction[i].className;
           }
         }
+
+        // Game logic
+        if (isGameMode && maxProb >= 99 && highestClass === currentTarget) {
+          matchCount++;
+          document.getElementById("matchCount").innerText = matchCount;
+          if (matchCount >= 10) {
+            endGame();
+          } else {
+            pickNewTarget();
+            updateStatus("匹配成功！下一目標: " + currentTarget, false);
+          }
+        }
+      }
+
+      function startGame() {
+        if (classNames.length === 0) {
+          updateStatus("請先載入模型", true);
+          return;
+        }
+        if (!isPredicting) {
+          updateStatus("請先開啟 Webcam", true);
+          return;
+        }
+        isGameMode = true;
+        matchCount = 0;
+        gameStartTime = Date.now();
+        document.getElementById("matchCount").innerText = matchCount;
+        document.getElementById("timer").innerText = 0;
+        document.getElementById("gameResult").style.display = "none";
+        document.getElementById("startGameBtn").disabled = true;
+        document.getElementById("resetGameBtn").disabled = false;
+        pickNewTarget();
+        updateStatus("遊戲開始！匹配目標: " + currentTarget, false);
+        startTimer();
+      }
+
+      function resetGame() {
+        isGameMode = false;
+        matchCount = 0;
+        currentTarget = "";
+        document.getElementById("targetClass").innerText = "";
+        document.getElementById("matchCount").innerText = 0;
+        document.getElementById("timer").innerText = 0;
+        document.getElementById("gameResult").style.display = "none";
+        document.getElementById("startGameBtn").disabled = false;
+        document.getElementById("resetGameBtn").disabled = true;
+        stopTimer();
+        updateStatus("遊戲已重置", false);
+      }
+
+      function pickNewTarget() {
+        const randomIndex = Math.floor(Math.random() * classNames.length);
+        currentTarget = classNames[randomIndex];
+        document.getElementById("targetClass").innerText = currentTarget;
+      }
+
+      function startTimer() {
+        gameTimerInterval = setInterval(() => {
+          if (gameStartTime) {
+            const elapsed = Math.floor((Date.now() - gameStartTime) / 1000);
+            document.getElementById("timer").innerText = elapsed;
+          }
+        }, 1000);
+      }
+
+      function stopTimer() {
+        clearInterval(gameTimerInterval);
+        gameTimerInterval = null;
+      }
+
+      function endGame() {
+        isGameMode = false;
+        const elapsed = Math.floor((Date.now() - gameStartTime) / 1000);
+        document.getElementById("gameResult").innerText = `遊戲結束！總時間: ${elapsed} 秒`;
+        document.getElementById("gameResult").style.display = "block";
+        document.getElementById("targetClass").innerText = "";
+        stopTimer();
+        updateStatus("遊戲結束！總時間: " + elapsed + " 秒", false);
+        document.getElementById("startGameBtn").disabled = false;
       }
     </script>
 </body>
