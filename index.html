@@ -71,6 +71,8 @@
         width: 100%;
         max-width: 400px;
         margin-bottom: 15px;
+        flex-wrap: wrap;
+        gap: 10px;
       }
       .logo {
         width: 100px;
@@ -133,6 +135,9 @@
       }
       #connectBtn {
         background: #28A745;
+      }
+      #connectUSBBtn {
+        background: #6F42C1;
       }
       #switchCameraBtn {
         background: #17A2B8;
@@ -255,7 +260,7 @@
           width: 80px;
           height: 27px;
         }
-        #connectBtn {
+        #connectBtn, #connectUSBBtn {
           margin-top: 8px;
         }
         h1 {
@@ -293,7 +298,10 @@
       <a href="https://www.pi-innovation.com.hk/?gad_source=1&gad_campaignid=21494171243&gbraid=0AAAAA-BsQmygjW-N2d2LI6KeFnseTQiJV&gclid=Cj0KCQjwovPGBhDxARIsAFhgkwT4ORGyhypiLhn92R2vyb9LAPLZtahD-tHDPa9OaBrmUAE_pM-DwwcaAl4kEALw_wcB" target="_blank">
         <img src="https://hkese.net/sites/default/files/organization_logos/pi-innovation-final-01_1_20230514.png" alt="PI Innovation Logo" class="logo">
       </a>
-      <button id="connectBtn" title="連接到 micro:bit">CONNECT</button>
+      <div>
+        <button id="connectBtn" title="連接到 micro:bit（藍牙）">Connect Bluetooth</button>
+        <button id="connectUSBBtn" title="連接到 micro:bit（USB）">Connect USB</button>
+      </div>
     </div>
     <div id="bluetoothWarning"></div>
     <div class="container">
@@ -325,6 +333,7 @@
 
       let uBitDevice;
       let rxCharacteristic;
+      let serialPort;
       let model, labelContainer, maxPredictions, lastSentClass = null;
       let isPredicting = false;
       let videoElement = null;
@@ -332,39 +341,60 @@
       let stream = null;
       let currentFacingMode = "environment"; // Default to rear camera
 
-      // Check Bluetooth support
+      // Check Bluetooth and Serial support
       const connectBtn = document.getElementById("connectBtn");
+      const connectUSBBtn = document.getElementById("connectUSBBtn");
       const bluetoothWarning = document.getElementById("bluetoothWarning");
-      function checkBluetoothSupport() {
-        if (!navigator.bluetooth) {
+      function checkConnectivitySupport() {
+        if (!navigator.bluetooth && !navigator.serial) {
           connectBtn.style.display = "none";
+          connectUSBBtn.style.display = "none";
           bluetoothWarning.style.display = "block";
-          bluetoothWarning.innerText = "⚠️ 此瀏覽器不支援藍牙連線，請使用 Chrome 瀏覽器（Android 6.0+ 或桌面）。";
+          bluetoothWarning.innerText = "⚠️ 此瀏覽器不支援 USB 和藍牙連線，請使用 Chrome 瀏覽器（Android 6.0+ 或桌面）。";
         } else if (window.location.protocol !== "https:" && window.location.hostname !== "localhost") {
           connectBtn.style.display = "none";
+          connectUSBBtn.style.display = "none";
           bluetoothWarning.style.display = "block";
-          bluetoothWarning.innerText = "⚠️ 藍牙功能需在 HTTPS 或 localhost 環境運行，請檢查網站協議。";
+          bluetoothWarning.innerText = "⚠️ USB 和藍牙功能需在 HTTPS 或 localhost 環境運行，請檢查網站協議。";
         } else {
-          navigator.bluetooth.getAvailability().then(available => {
-            if (!available) {
-              connectBtn.style.display = "none";
-              bluetoothWarning.style.display = "block";
-              bluetoothWarning.innerText = "⚠️ 請開啟設備藍牙並確保 Chrome 已授予藍牙權限。";
-            } else {
+          // Check Bluetooth
+          if (navigator.bluetooth) {
+            navigator.bluetooth.getAvailability().then(available => {
+              if (!available) {
+                connectBtn.style.display = "none";
+                bluetoothWarning.style.display = "block";
+                bluetoothWarning.innerText = "⚠️ 請開啟設備藍牙並確保 Chrome 已授予藍牙權限。";
+              } else {
+                connectBtn.style.display = "block";
+                bluetoothWarning.style.display = "none";
+              }
+            }).catch(() => {
               connectBtn.style.display = "block";
               bluetoothWarning.style.display = "none";
+            });
+          } else {
+            connectBtn.style.display = "none";
+          }
+
+          // Check Serial
+          if (navigator.serial) {
+            connectUSBBtn.style.display = "block";
+          } else {
+            connectUSBBtn.style.display = "none";
+            if (!navigator.bluetooth) {
+              bluetoothWarning.style.display = "block";
+              bluetoothWarning.innerText = "⚠️ 此瀏覽器不支援 USB 和藍牙連線，請使用 Chrome 瀏覽器。";
             }
-          }).catch(() => {
-            connectBtn.style.display = "block";
-            bluetoothWarning.style.display = "none";
-          });
+          }
         }
       }
-      checkBluetoothSupport();
+      checkConnectivitySupport();
 
       // Bind button events
-      connectBtn.addEventListener("click", connectButtonPressed);
-      connectBtn.addEventListener("touchstart", connectButtonPressed);
+      connectBtn.addEventListener("click", connectBluetooth);
+      connectBtn.addEventListener("touchstart", connectBluetooth);
+      connectUSBBtn.addEventListener("click", connectUSB);
+      connectUSBBtn.addEventListener("touchstart", connectUSB);
       document.getElementById("loadModelBtn").addEventListener("click", loadModel);
       document.getElementById("loadModelBtn").addEventListener("touchstart", loadModel);
       document.getElementById("webcamBtn").addEventListener("click", setupWebcam);
@@ -376,7 +406,7 @@
       switchCameraBtn.addEventListener("click", switchCamera);
       switchCameraBtn.addEventListener("touchstart", switchCamera);
 
-      async function connectButtonPressed() {
+      async function connectBluetooth() {
         try {
           console.log("Requesting Bluetooth Device...");
           uBitDevice = await navigator.bluetooth.requestDevice({
@@ -384,7 +414,7 @@
             optionalServices: [UART_SERVICE_UUID],
           });
 
-          uBitDevice.addEventListener("gattserverdisconnected", onDisconnected);
+          uBitDevice.addEventListener("gattserverdisconnected", onBluetoothDisconnected);
 
           console.log("Connecting to GATT Server...");
           const server = await uBitDevice.gatt.connect();
@@ -406,34 +436,69 @@
             UART_RX_CHARACTERISTIC_UUID
           );
 
-          console.log("Connected to micro:bit");
+          console.log("Connected to micro:bit via Bluetooth");
           updateStatus("藍牙已連接到 micro:bit", false);
         } catch (error) {
-          console.error("Connection failed:", error);
+          console.error("Bluetooth connection failed:", error);
           updateStatus("藍牙連接失敗: " + error.message, true);
         }
       }
 
-      async function sendData(data) {
-        if (!rxCharacteristic) {
-          console.warn("Device not connected");
-          updateStatus("設備未連接，無法發送數據", true);
-          return;
-        }
+      async function connectUSB() {
         try {
-          let encoder = new TextEncoder();
-          queueGattOperation(() =>
-            rxCharacteristic
-              .writeValue(encoder.encode(data + "\n"))
-              .then(() => {
-                console.log("Sent:", data);
-                updateStatus(`已發送數據: ${data}`, false);
-              })
-              .catch((error) => {
-                console.error("Send failed:", error);
-                updateStatus("發送失敗: " + error.message, true);
-              })
-          );
+          console.log("Requesting Serial Port...");
+          serialPort = await navigator.serial.requestPort({});
+          await serialPort.open({ baudRate: 9600 }); // micro:bit default baud rate
+          console.log("Connected to micro:bit via USB");
+          updateStatus("USB 已連接到 micro:bit", false);
+
+          // Handle port closure
+          serialPort.addEventListener("disconnect", () => {
+            console.log("USB port disconnected");
+            updateStatus("USB 已斷開連接", true);
+            serialPort = null;
+          });
+        } catch (error) {
+          console.error("USB connection failed:", error);
+          let errorMessage = "USB 連接失敗: " + error.message;
+          if (error.name === "NotFoundError") {
+            errorMessage = "USB 連接失敗: 未找到可用序列埠，請確認 micro:bit 已連接";
+          } else if (error.name === "SecurityError") {
+            errorMessage = "USB 連接失敗: 請在 HTTPS 或 localhost 環境運行";
+          }
+          updateStatus(errorMessage, true);
+        }
+      }
+
+      async function sendData(data) {
+        try {
+          // Prefer USB if connected
+          if (serialPort) {
+            const writer = serialPort.writable.getWriter();
+            const encoder = new TextEncoder();
+            await writer.write(encoder.encode(data + "\n"));
+            writer.releaseLock();
+            console.log("Sent via USB:", data);
+            updateStatus(`已通過 USB 發送數據: ${data}`, false);
+            return;
+          }
+
+          // Fallback to Bluetooth if connected
+          if (rxCharacteristic) {
+            const encoder = new TextEncoder();
+            await queueGattOperation(() =>
+              rxCharacteristic
+                .writeValue(encoder.encode(data + "\n"))
+                .then(() => {
+                  console.log("Sent via Bluetooth:", data);
+                  updateStatus(`已通過藍牙發送數據: ${data}`, false);
+                })
+            );
+            return;
+          }
+
+          console.warn("No device connected");
+          updateStatus("設備未連接，無法發送數據", true);
         } catch (error) {
           console.error("Send error:", error);
           updateStatus("發送錯誤: " + error.message, true);
@@ -452,13 +517,14 @@
           receivedData[i] = event.target.value.getUint8(i);
         }
         const receivedString = String.fromCharCode.apply(null, receivedData);
-        console.log("Received:", receivedString);
-        updateStatus(`收到數據: ${receivedString}`, false);
+        console.log("Received via Bluetooth:", receivedString);
+        updateStatus(`收到藍牙數據: ${receivedString}`, false);
       }
 
-      function onDisconnected(event) {
-        console.log("micro:bit is disconnected.");
-        updateStatus("micro:bit 已斷開連接", true);
+      function onBluetoothDisconnected(event) {
+        console.log("micro:bit Bluetooth disconnected");
+        updateStatus("藍牙已斷開連接", true);
+        rxCharacteristic = null;
       }
 
       function updateStatus(message, isError) {
@@ -721,7 +787,7 @@
             maxIndex = i;
           }
           if (prediction[i].probability >= 0.995 && prediction[i].className !== lastSentClass) {
-            sendData(prediction[i].className);
+            await sendData(prediction[i].className);
             lastSentClass = prediction[i].className;
           }
         }
