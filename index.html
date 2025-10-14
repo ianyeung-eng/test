@@ -570,10 +570,7 @@
           document.getElementById("modelSpinner").style.display = "block";
           model = await tmImage.load(modelUrl, metadataUrl);
           maxPredictions = model.getTotalClasses();
-          classNames = []; // Get class names
-          for (let i = 0; i < maxPredictions; i++) {
-            classNames.push(model.getClassLabel(i)); // Assuming tmImage has getClassLabel method; adjust if needed
-          }
+          classNames = model.getClassLabels(); // Correct method to get array of class labels
           console.log('Model loaded, classes:', classNames);
           updateStatus("模型已成功載入", false);
           document.getElementById("webcamBtn").disabled = false;
