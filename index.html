@@ -1,4 +1,43 @@
-<!DOCTYPE html>
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -86,13 +125,23 @@
         background: #cccccc;
         cursor: not-allowed;
       }
-      input {
+      input[type="text"] {
         padding: 12px;
         font-size: 15px;
-        width: 100%;
+        width: 250px; /* Shortened width */
         border: 1px solid #ccc;
         border-radius: 6px;
-        margin-bottom: 10px;
+        margin: 0 auto 10px; /* Centered */
+        display: block;
+      }
+      input[type="number"] {
+        padding: 12px;
+        font-size: 15px;
+        width: 80px; /* Shortened width for match goal */
+        border: 1px solid #ccc;
+        border-radius: 6px;
+        margin: 0 auto 10px; /* Centered */
+        display: block;
       }
       #connectBtn {
         background: #28A745;
@@ -318,11 +367,13 @@
 
       <div class="section" id="gameSection">
         <h2>Matching Game</h2>
+        <label for="matchGoal">Number of Matches (5-20):</label>
+        <input type="number" id="matchGoal" min="5" max="20" value="10">
         <button id="startGameBtn" title="開始遊戲" disabled>Start Game</button>
         <button id="resetGameBtn" title="重置遊戲" disabled>Reset Game</button>
         <div id="gameStatus">
           <p>Target: <span id="targetClass"></span></p>
-          <p>Matches: <span id="matchCount">0</span>/10</p>
+          <p>Matches: <span id="matchCount">0</span>/<span id="currentMatchGoal">10</span></p>
           <p>Time: <span id="timer">0</span> seconds</p>
         </div>
         <div id="gameResult"></div>
@@ -348,7 +399,9 @@
       let isGameMode = false;
       let classNames = [];
       let currentTarget = "";
+      let lastTarget = ""; // Track last target to avoid consecutive repeats
       let matchCount = 0;
+      let matchGoal = 10; // Default goal
       let gameStartTime = null;
       let gameTimerInterval = null;
 
@@ -813,7 +866,7 @@
         if (isGameMode && maxProb >= 99 && highestClass === currentTarget) {
           matchCount++;
           document.getElementById("matchCount").innerText = matchCount;
-          if (matchCount >= 10) {
+          if (matchCount >= matchGoal) {
             endGame();
           } else {
             pickNewTarget();
@@ -831,8 +884,15 @@
           updateStatus("請先開啟 Webcam", true);
           return;
         }
+        matchGoal = parseInt(document.getElementById("matchGoal").value) || 10;
+        if (matchGoal < 5 || matchGoal > 20) {
+          updateStatus("題目數必須在5-20之間", true);
+          return;
+        }
+        document.getElementById("currentMatchGoal").innerText = matchGoal;
         isGameMode = true;
         matchCount = 0;
+        lastTarget = "";
         gameStartTime = Date.now();
         document.getElementById("matchCount").innerText = matchCount;
         document.getElementById("timer").innerText = 0;
@@ -848,6 +908,7 @@
         isGameMode = false;
         matchCount = 0;
         currentTarget = "";
+        lastTarget = "";
         document.getElementById("targetClass").innerText = "";
         document.getElementById("matchCount").innerText = 0;
         document.getElementById("timer").innerText = 0;
@@ -859,8 +920,12 @@
       }
 
       function pickNewTarget() {
-        const randomIndex = Math.floor(Math.random() * classNames.length);
+        let randomIndex = Math.floor(Math.random() * classNames.length);
+        while (classNames[randomIndex] === lastTarget && classNames.length > 1) {
+          randomIndex = Math.floor(Math.random() * classNames.length);
+        }
         currentTarget = classNames[randomIndex];
+        lastTarget = currentTarget;
         document.getElementById("targetClass").innerText = currentTarget;
       }
 
