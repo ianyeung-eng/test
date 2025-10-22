@@ -414,6 +414,9 @@
       let serialPort;
       let model, webcam, labelContainer, maxPredictions, lastSentClass = null;
       let isPredicting = false;
+      let videoElement = null;
+      let canvasElement = null;
+      let stream = null;
       let ctx = null;
       let currentFacingMode = "environment";
 
@@ -635,12 +638,20 @@
           if (projectType === "audio" && model && model.stopListening) {
             model.stopListening();
           }
-          if (webcam) {
+          if (projectType === "pose" && webcam) {
             webcam.stop();
             webcam = null;
           }
+          if (stream) {
+            stream.getTracks().forEach(track => track.stop());
+            stream = null;
+          }
         }
         model = null;
+        webcam = null;
+        videoElement = null;
+        canvasElement = null;
+        ctx = null;
         lastSentClass = null;
         classNames = [];
         document.getElementById("predictions").innerHTML = "";
@@ -716,6 +727,60 @@
         }
       }
 
+      async function startCamera(facingMode) {
+        try {
+          if (stream) {
+            stream.getTracks().forEach(track => track.stop());
+            stream = null;
+          }
+          let targetWidth = 192;
+          let targetHeight = 192;
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({
+              video: { 
+                facingMode: facingMode,
+                width: { ideal: 192 },
+                height: { ideal: 192 }
+              }
+            });
+          } catch (error) {
+            console.warn(`Failed to access ${facingMode} camera, trying lower resolution:`, error);
+            stream = await navigator.mediaDevices.getUserMedia({
+              video: { 
+                facingMode: facingMode,
+                width: { ideal: 160 },
+                height: { ideal: 160 }
+              }
+            });
+            targetWidth = 160;
+            targetHeight = 160;
+          }
+          videoElement.srcObject = stream;
+          canvasElement.width = targetWidth;
+          canvasElement.height = targetHeight;
+          console.log(`Camera started: facingMode=${facingMode}, width=${targetWidth}, height=${targetHeight}`);
+          await new Promise(resolve => {
+            videoElement.onloadedmetadata = () => {
+              console.log("Video metadata loaded");
+              resolve();
+            };
+          });
+          return true;
+        } catch (error) {
+          console.error(`Error accessing ${facingMode} camera:`, error);
+          let errorMessage = `切換到${facingMode === "environment" ? "後置" : "前置"}攝影機失敗: ${error.message}`;
+          if (error.name === "NotAllowedError") {
+            errorMessage = "Webcam 啟動失敗: 請允許攝影機權限";
+          } else if (error.name === "NotFoundError") {
+            errorMessage = `無可用${facingMode === "environment" ? "後置" : "前置"}攝影機`;
+          } else if (error.name === "NotReadableError") {
+            errorMessage = "Webcam 啟動失敗: 攝影機被其他應用程式佔用";
+          }
+          updateStatus(errorMessage, true);
+          return false;
+        }
+      }
+
       async function setupWebcam() {
         if (projectType === "audio") {
           updateStatus("音訊專案無需使用 Webcam", true);
@@ -742,15 +807,38 @@
           const webcamContainer = document.getElementById("webcam-container");
           webcamContainer.innerHTML = "";
           webcamContainer.appendChild(switchCameraBtn);
-          const canvasElement = document.createElement("canvas");
-          canvasElement.width = 192;
-          canvasElement.height = 192;
-          webcamContainer.appendChild(canvasElement);
-          ctx = canvasElement.getContext("2d");
-          const flip = currentFacingMode === "user";
-          webcam = new tmPose.Webcam(192, 192, flip);
-          await webcam.setup();
-          await webcam.play();
+
+          if (projectType === "pose") {
+            const flip = currentFacingMode === "user";
+            webcam = new tmPose.Webcam(192, 192, flip);
+            await webcam.setup();
+            await webcam.play();
+            canvasElement = document.createElement("canvas");
+            canvasElement.width = 192;
+            canvasElement.height = 192;
+            webcamContainer.appendChild(canvasElement);
+            ctx = canvasElement.getContext("2d");
+          } else if (projectType === "image") {
+            videoElement = document.createElement("video");
+            videoElement.width = 192;
+            videoElement.height = 192;
+            videoElement.autoplay = true;
+            videoElement.playsinline = true;
+            videoElement.style.display = "none";
+            canvasElement = document.createElement("canvas");
+            canvasElement.width = 192;
+            canvasElement.height = 192;
+            ctx = canvasElement.getContext("2d");
+            const success = await startCamera(currentFacingMode);
+            if (!success) {
+              document.getElementById("webcamBtn").disabled = false;
+              document.getElementById("webcamSpinner").style.display = "none";
+              return;
+            }
+            webcamContainer.appendChild(videoElement);
+            webcamContainer.appendChild(canvasElement);
+          }
+
           labelContainer = document.getElementById("predictions");
           labelContainer.innerHTML = "";
           for (let i = 0; i < maxPredictions; i++) {
@@ -803,13 +891,21 @@
             document.getElementById("webcamSpinner").style.display = "none";
             return;
           }
-          if (webcam) {
+          if (projectType === "pose" && webcam) {
             webcam.stop();
+            const flip = currentFacingMode === "user";
+            webcam = new tmPose.Webcam(192, 192, flip);
+            await webcam.setup();
+            await webcam.play();
+          } else if (projectType === "image") {
+            const success = await startCamera(currentFacingMode);
+            if (!success) {
+              currentFacingMode = currentFacingMode === "environment" ? "user" : "environment";
+              switchCameraBtn.disabled = false;
+              document.getElementById("webcamSpinner").style.display = "none";
+              return;
+            }
           }
-          const flip = currentFacingMode === "user";
-          webcam = new tmPose.Webcam(192, 192, flip);
-          await webcam.setup();
-          await webcam.play();
           switchCameraBtn.innerText = currentFacingMode === "environment" ? "Switch to Front Camera" : "Switch to Rear Camera";
           updateStatus(`已切換到${currentFacingMode === "environment" ? "後置" : "前置"}攝影機`, false);
         } catch (error) {
@@ -825,9 +921,12 @@
 
       async function loop() {
         if (!isPredicting) return;
-        if ((projectType === "image" || projectType === "pose") && model && webcam) {
-          if (projectType === "pose") {
+        if ((projectType === "image" || projectType === "pose") && model) {
+          if (projectType === "pose" && webcam) {
             webcam.update();
+          }
+          if (projectType === "image" && videoElement && canvasElement && ctx) {
+            ctx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
           }
           await predict();
         }
@@ -837,7 +936,11 @@
       async function predict() {
         try {
           if (projectType === "image") {
-            const prediction = await model.predict(webcam.canvas);
+            if (!canvasElement || !ctx || !videoElement) {
+              updateStatus("圖像專案缺少必要的 webcam 元素", true);
+              return;
+            }
+            const prediction = await model.predict(canvasElement);
             let maxProb = 0;
             let maxIndex = 0;
             let highestClass = "";
@@ -869,6 +972,10 @@
               }
             }
           } else if (projectType === "pose") {
+            if (!webcam || !model) {
+              updateStatus("姿勢專案缺少模型或 webcam", true);
+              return;
+            }
             const { pose, posenetOutput } = await model.estimatePose(webcam.canvas);
             const prediction = await model.predict(posenetOutput);
             let maxProb = 0;
