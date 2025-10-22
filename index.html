@@ -43,7 +43,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Interactive Micro:bit Web App</title>
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.18.0/dist/tf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/speech-commands@0.4.0/dist/speech-commands.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/pose@0.8.6/dist/teachablemachine-pose.min.js"></script>
@@ -887,10 +887,7 @@
 
       async function loop() {
         if (!isPredicting) return;
-        if (projectType === "image" && videoElement && model && canvasElement) {
-          ctx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
-          await predict();
-        } else if (projectType === "pose" && videoElement && model && canvasElement) {
+        if ((projectType === "image" || projectType === "pose") && videoElement && model && canvasElement) {
           ctx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
           await predict();
         }
@@ -898,79 +895,82 @@
       }
 
       async function predict() {
-        if (projectType === "image") {
-          const prediction = await model.predict(canvasElement);
-          let maxProb = 0;
-          let maxIndex = 0;
-          let highestClass = "";
-          for (let i = 0; i < maxPredictions; i++) {
-            const prob = (prediction[i].probability * 100).toFixed(2);
-            const item = labelContainer.childNodes[i];
-            item.querySelector(".prediction-label").innerText = prediction[i].className;
-            item.querySelector(".prediction-value").innerText = `${prob}%`;
-            item.querySelector(".prediction-bar").value = prob;
-            item.classList.toggle("highest", prob > maxProb);
-            if (prob > maxProb) {
-              maxProb = prob;
-              maxIndex = i;
-              highestClass = prediction[i].className;
+        try {
+          if (projectType === "image") {
+            const prediction = await model.predict(canvasElement);
+            let maxProb = 0;
+            let maxIndex = 0;
+            let highestClass = "";
+            for (let i = 0; i < maxPredictions; i++) {
+              const prob = (prediction[i].probability * 100).toFixed(2);
+              const item = labelContainer.childNodes[i];
+              item.querySelector(".prediction-label").innerText = prediction[i].className;
+              item.querySelector(".prediction-value").innerText = `${prob}%`;
+              item.querySelector(".prediction-bar").value = prob;
+              item.classList.toggle("highest", prob > maxProb);
+              if (prob > maxProb) {
+                maxProb = prob;
+                maxIndex = i;
+                highestClass = prediction[i].className;
+              }
+              if (prediction[i].probability >= 0.995 && prediction[i].className !== lastSentClass) {
+                await sendData(prediction[i].className);
+                lastSentClass = prediction[i].className;
+              }
             }
-            if (prediction[i].probability >= 0.995 && prediction[i].className !== lastSentClass) {
-              await sendData(prediction[i].className);
-              lastSentClass = prediction[i].className;
+            if (isGameMode && maxProb >= 99 && highestClass === currentTarget) {
+              matchCount++;
+              document.getElementById("matchCount").innerText = matchCount;
+              if (matchCount >= matchGoal) {
+                endGame();
+              } else {
+                pickNewTarget();
+                updateStatus("匹配成功！下一目標: " + currentTarget, false);
+              }
             }
-          }
-          if (isGameMode && maxProb >= 99 && highestClass === currentTarget) {
-            matchCount++;
-            document.getElementById("matchCount").innerText = matchCount;
-            if (matchCount >= matchGoal) {
-              endGame();
-            } else {
-              pickNewTarget();
-              updateStatus("匹配成功！下一目標: " + currentTarget, false);
+          } else if (projectType === "pose") {
+            const { pose, posenetOutput } = await model.estimatePose(canvasElement);
+            const prediction = await model.predict(posenetOutput);
+            let maxProb = 0;
+            let maxIndex = 0;
+            let highestClass = "";
+            for (let i = 0; i < maxPredictions; i++) {
+              const prob = (prediction[i].probability * 100).toFixed(2);
+              const item = labelContainer.childNodes[i];
+              item.querySelector(".prediction-label").innerText = prediction[i].className;
+              item.querySelector(".prediction-value").innerText = `${prob}%`;
+              item.querySelector(".prediction-bar").value = prob;
+              item.classList.toggle("highest", prob > maxProb);
+              if (prob > maxProb) {
+                maxProb = prob;
+                maxIndex = i;
+                highestClass = prediction[i].className;
+              }
+              if (prediction[i].probability >= 0.995 && prediction[i].className !== lastSentClass) {
+                await sendData(prediction[i].className);
+                lastSentClass = prediction[i].className;
+              }
             }
-          }
-        } else if (projectType === "pose") {
-          const { pose, posenetOutput } = await model.estimatePose(canvasElement);
-          const prediction = await model.predict(posenetOutput);
-          let maxProb = 0;
-          let maxIndex = 0;
-          let highestClass = "";
-          for (let i = 0; i < maxPredictions; i++) {
-            const prob = (prediction[i].probability * 100).toFixed(2);
-            const item = labelContainer.childNodes[i];
-            item.querySelector(".prediction-label").innerText = prediction[i].className;
-            item.querySelector(".prediction-value").innerText = `${prob}%`;
-            item.querySelector(".prediction-bar").value = prob;
-            item.classList.toggle("highest", prob > maxProb);
-            if (prob > maxProb) {
-              maxProb = prob;
-              maxIndex = i;
-              highestClass = prediction[i].className;
-            }
-            if (prediction[i].probability >= 0.995 && prediction[i].className !== lastSentClass) {
-              await sendData(prediction[i].className);
-              lastSentClass = prediction[i].className;
-            }
-          }
-          if (canvasElement && ctx) {
-            ctx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
-            if (pose) {
+            if (canvasElement && ctx && pose) {
+              ctx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
               const minPartConfidence = 0.5;
               tmPose.drawKeypoints(pose.keypoints, minPartConfidence, ctx);
               tmPose.drawSkeleton(pose.keypoints, minPartConfidence, ctx);
             }
-          }
-          if (isGameMode && maxProb >= 99 && highestClass === currentTarget) {
-            matchCount++;
-            document.getElementById("matchCount").innerText = matchCount;
-            if (matchCount >= matchGoal) {
-              endGame();
-            } else {
-              pickNewTarget();
-              updateStatus("匹配成功！下一目標: " + currentTarget, false);
+            if (isGameMode && maxProb >= 99 && highestClass === currentTarget) {
+              matchCount++;
+              document.getElementById("matchCount").innerText = matchCount;
+              if (matchCount >= matchGoal) {
+                endGame();
+              } else {
+                pickNewTarget();
+                updateStatus("匹配成功！下一目標: " + currentTarget, false);
+              }
             }
           }
+        } catch (error) {
+          console.error('Prediction error:', error);
+          updateStatus("預測錯誤: " + error.message, true);
         }
       }
 
