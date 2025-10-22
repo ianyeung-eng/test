@@ -42,9 +42,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Image Recognition</title>
+    <title>Interactive Micro:bit Web App</title>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/speech-commands@0.4.0/dist/speech-commands.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/pose@0.8/dist/teachablemachine-pose.min.js"></script>
     <style>
       body {
         font-family: 'Segoe UI', Arial, sans-serif;
@@ -125,22 +127,31 @@
         background: #cccccc;
         cursor: not-allowed;
       }
+      select {
+        padding: 12px;
+        font-size: 15px;
+        width: 150px;
+        border: 1px solid #ccc;
+        border-radius: 6px;
+        margin: 0 auto 10px;
+        display: block;
+      }
       input[type="text"] {
         padding: 12px;
         font-size: 15px;
-        width: 250px; /* Shortened width */
+        width: 250px;
         border: 1px solid #ccc;
         border-radius: 6px;
-        margin: 0 auto 10px; /* Centered */
+        margin: 0 auto 10px;
         display: block;
       }
       input[type="number"] {
         padding: 12px;
         font-size: 15px;
-        width: 80px; /* Shortened width for match goal */
+        width: 80px;
         border: 1px solid #ccc;
         border-radius: 6px;
-        margin: 0 auto 10px; /* Centered */
+        margin: 0 auto 10px;
         display: block;
       }
       #connectBtn {
@@ -177,7 +188,7 @@
         overflow: hidden;
       }
       #webcam-container video {
-        display: none; /* Hide video element */
+        display: none;
       }
       #webcam-container canvas {
         width: 192px;
@@ -288,6 +299,9 @@
         margin: 10px 0;
         color: #28A745;
       }
+      .hidden {
+        display: none;
+      }
       @media (max-width: 500px) {
         .container {
           max-width: 95%;
@@ -306,7 +320,7 @@
         h1 {
           font-size: 20px;
         }
-        button, input {
+        button, input, select {
           font-size: 14px;
           padding: 10px;
         }
@@ -323,12 +337,12 @@
           max-height: 180px;
         }
         #switchCameraBtn {
-          display: block; /* Show on mobile */
+          display: block;
         }
       }
       @media (min-width: 501px) {
         #switchCameraBtn {
-          display: none; /* Hide on desktop */
+          display: none;
         }
       }
     </style>
@@ -345,9 +359,15 @@
     </div>
     <div id="bluetoothWarning"></div>
     <div class="container">
-      <h1>Image Recognition</h1>
+      <h1>Teachable Machine Projects
+        <select id="projectType" title="選擇專案類型">
+          <option value="image">Image Project</option>
+          <option value="audio">Audio Project</option>
+          <option value="pose">Pose Project</option>
+        </select>
+      </h1>
 
-      <div class="section">
+      <div class="section" id="model-section">
         <h2>Model URL</h2>
         <input type="text" id="modelInput" placeholder="Enter Teachable Machine model URL">
         <button id="loadModelBtn" title="載入 Teachable Machine 模型">Load Model</button>
@@ -355,17 +375,17 @@
         <div id="modelSpinner" class="spinner"></div>
       </div>
 
-      <div class="section">
+      <div class="section" id="webcam-section">
         <h2>Webcam Preview</h2>
         <div id="webcam-container">
           <button id="switchCameraBtn" title="切換前後攝影機" disabled>Switch to Front Camera</button>
         </div>
-        <button id="webcamBtn" title="開啟 webcam 進行圖像辨識" disabled>Open Webcam</button>
+        <button id="webcamBtn" title="開啟 webcam 進行辨識" disabled>Open Webcam</button>
         <div id="predictions"></div>
         <div id="webcamSpinner" class="spinner"></div>
       </div>
 
-      <div class="section" id="gameSection">
+      <div class="section hidden" id="gameSection">
         <h2>Matching Game</h2>
         <label for="matchGoal">Number of Matches (5-20):</label>
         <input type="number" id="matchGoal" min="5" max="20" value="10">
@@ -393,15 +413,18 @@
       let videoElement = null;
       let canvasElement = null;
       let stream = null;
-      let currentFacingMode = "environment"; // Default to rear camera
+      let currentFacingMode = "environment";
+      let projectType = "image"; // Default project
+      let webcam = null; // For Pose project
+      let ctx = null; // For Pose project
 
-      // Game variables
+      // Game variables (Image project only)
       let isGameMode = false;
       let classNames = [];
       let currentTarget = "";
-      let lastTarget = ""; // Track last target to avoid consecutive repeats
+      let lastTarget = "";
       let matchCount = 0;
-      let matchGoal = 10; // Default goal
+      let matchGoal = 10;
       let gameStartTime = null;
       let gameTimerInterval = null;
 
@@ -421,7 +444,6 @@
           bluetoothWarning.style.display = "block";
           bluetoothWarning.innerText = "⚠️ USB 和藍牙功能需在 HTTPS 或 localhost 環境運行，請檢查網站協議。";
         } else {
-          // Check Bluetooth
           if (navigator.bluetooth) {
             navigator.bluetooth.getAvailability().then(available => {
               if (!available) {
@@ -439,8 +461,6 @@
           } else {
             connectBtn.style.display = "none";
           }
-
-          // Check Serial
           if (navigator.serial) {
             connectUSBBtn.style.display = "block";
           } else {
@@ -471,6 +491,25 @@
       switchCameraBtn.addEventListener("touchstart", switchCamera);
       document.getElementById("startGameBtn").addEventListener("click", startGame);
       document.getElementById("resetGameBtn").addEventListener("click", resetGame);
+      document.getElementById("projectType").addEventListener("change", (e) => {
+        projectType = e.target.value;
+        resetProject();
+        updateUI();
+      });
+
+      function updateUI() {
+        const webcamSection = document.getElementById("webcam-section");
+        const gameSection = document.getElementById("gameSection");
+        if (projectType === "audio") {
+          webcamSection.classList.add("hidden");
+          gameSection.classList.add("hidden");
+          document.getElementById("webcamBtn").disabled = true;
+        } else {
+          webcamSection.classList.remove("hidden");
+          document.getElementById("webcamBtn").disabled = model ? false : true;
+          gameSection.classList.toggle("hidden", projectType !== "image");
+        }
+      }
 
       async function connectBluetooth() {
         try {
@@ -479,29 +518,16 @@
             filters: [{ namePrefix: "BBC micro:bit" }],
             optionalServices: [UART_SERVICE_UUID],
           });
-
           uBitDevice.addEventListener("gattserverdisconnected", onBluetoothDisconnected);
-
           console.log("Connecting to GATT Server...");
           const server = await uBitDevice.gatt.connect();
-
           console.log("Getting Service...");
           const service = await server.getPrimaryService(UART_SERVICE_UUID);
-
           console.log("Getting Characteristics...");
-          const txCharacteristic = await service.getCharacteristic(
-            UART_TX_CHARACTERISTIC_UUID
-          );
+          const txCharacteristic = await service.getCharacteristic(UART_TX_CHARACTERISTIC_UUID);
           txCharacteristic.startNotifications();
-          txCharacteristic.addEventListener(
-            "characteristicvaluechanged",
-            onTxCharacteristicValueChanged
-          );
-
-          rxCharacteristic = await service.getCharacteristic(
-            UART_RX_CHARACTERISTIC_UUID
-          );
-
+          txCharacteristic.addEventListener("characteristicvaluechanged", onTxCharacteristicValueChanged);
+          rxCharacteristic = await service.getCharacteristic(UART_RX_CHARACTERISTIC_UUID);
           console.log("Connected to micro:bit via Bluetooth");
           updateStatus("藍牙已連接到 micro:bit", false);
         } catch (error) {
@@ -514,11 +540,9 @@
         try {
           console.log("Requesting Serial Port...");
           serialPort = await navigator.serial.requestPort({});
-          await serialPort.open({ baudRate: 9600 }); // micro:bit default baud rate
+          await serialPort.open({ baudRate: 9600 });
           console.log("Connected to micro:bit via USB");
           updateStatus("USB 已連接到 micro:bit", false);
-
-          // Handle port closure
           serialPort.addEventListener("disconnect", () => {
             console.log("USB port disconnected");
             updateStatus("USB 已斷開連接", true);
@@ -537,8 +561,8 @@
       }
 
       async function sendData(data) {
+        if (projectType !== "image") return; // Only send for Image project
         try {
-          // Prefer USB if connected
           if (serialPort) {
             const writer = serialPort.writable.getWriter();
             const encoder = new TextEncoder();
@@ -548,21 +572,16 @@
             updateStatus(`已通過 USB 發送數據: ${data}`, false);
             return;
           }
-
-          // Fallback to Bluetooth if connected
           if (rxCharacteristic) {
             const encoder = new TextEncoder();
             await queueGattOperation(() =>
-              rxCharacteristic
-                .writeValue(encoder.encode(data + "\n"))
-                .then(() => {
-                  console.log("Sent via Bluetooth:", data);
-                  updateStatus(`已通過藍牙發送數據: ${data}`, false);
-                })
+              rxCharacteristic.writeValue(encoder.encode(data + "\n")).then(() => {
+                console.log("Sent via Bluetooth:", data);
+                updateStatus(`已通過藍牙發送數據: ${data}`, false);
+              })
             );
             return;
           }
-
           console.warn("No device connected");
           updateStatus("設備未連接，無法發送數據", true);
         } catch (error) {
@@ -608,6 +627,31 @@
         }
       }
 
+      function resetProject() {
+        if (isPredicting) {
+          isPredicting = false;
+          if (projectType === "audio" && model && model.stopListening) {
+            model.stopListening();
+          }
+          if (stream) {
+            stream.getTracks().forEach(track => track.stop());
+            stream = null;
+          }
+          if (webcam && projectType === "pose") {
+            webcam.stop();
+            webcam = null;
+          }
+        }
+        model = null;
+        lastSentClass = null;
+        classNames = [];
+        document.getElementById("predictions").innerHTML = "";
+        document.getElementById("webcam-container").innerHTML = '<button id="switchCameraBtn" title="切換前後攝影機" disabled>Switch to Front Camera</button>';
+        document.getElementById("webcamBtn").disabled = true;
+        document.getElementById("startGameBtn").disabled = true;
+        resetGame();
+      }
+
       async function loadModel() {
         let modelUrl = document.getElementById('modelInput').value.trim();
         if (!modelUrl) {
@@ -621,13 +665,49 @@
         try {
           document.getElementById("loadModelBtn").disabled = true;
           document.getElementById("modelSpinner").style.display = "block";
-          model = await tmImage.load(modelUrl, metadataUrl);
-          maxPredictions = model.getTotalClasses();
-          classNames = model.getClassLabels(); // Correct method to get array of class labels
-          console.log('Model loaded, classes:', classNames);
-          updateStatus("模型已成功載入", false);
-          document.getElementById("webcamBtn").disabled = false;
-          document.getElementById("startGameBtn").disabled = false; // Enable game button after model load
+          if (projectType === "image") {
+            model = await tmImage.load(modelUrl, metadataUrl);
+            maxPredictions = model.getTotalClasses();
+            classNames = model.getClassLabels();
+            console.log('Image model loaded, classes:', classNames);
+            updateStatus("圖像模型已成功載入", false);
+            document.getElementById("webcamBtn").disabled = false;
+            document.getElementById("startGameBtn").disabled = false;
+          } else if (projectType === "audio") {
+            model = speechCommands.create("BROWSER_FFT", undefined, modelUrl, metadataUrl);
+            await model.ensureModelLoaded();
+            maxPredictions = model.wordLabels().length;
+            classNames = model.wordLabels();
+            console.log('Audio model loaded, classes:', classNames);
+            updateStatus("音訊模型已成功載入", false);
+            labelContainer = document.getElementById("predictions");
+            labelContainer.innerHTML = "";
+            for (let i = 0; i < maxPredictions; i++) {
+              const item = document.createElement("div");
+              item.className = "prediction-item";
+              item.innerHTML = `<span class="prediction-label">${classNames[i]}</span><span class="prediction-value"></span>`;
+              labelContainer.appendChild(item);
+            }
+            model.listen(result => {
+              for (let i = 0; i < maxPredictions; i++) {
+                const prob = (result.scores[i] * 100).toFixed(2);
+                labelContainer.childNodes[i].querySelector(".prediction-value").innerText = `${prob}%`;
+              }
+            }, {
+              includeSpectrogram: true,
+              probabilityThreshold: 0.75,
+              invokeCallbackOnNoiseAndUnknown: true,
+              overlapFactor: 0.50
+            });
+            isPredicting = true;
+          } else if (projectType === "pose") {
+            model = await tmPose.load(modelUrl, metadataUrl);
+            maxPredictions = model.getTotalClasses();
+            classNames = model.getClassLabels();
+            console.log('Pose model loaded, classes:', classNames);
+            updateStatus("姿勢模型已成功載入", false);
+            document.getElementById("webcamBtn").disabled = false;
+          }
         } catch (error) {
           console.error('Error loading model:', error);
           updateStatus("模型載入失敗: " + error.message, true);
@@ -639,13 +719,10 @@
 
       async function startCamera(facingMode) {
         try {
-          // Stop previous stream if exists
           if (stream) {
             stream.getTracks().forEach(track => track.stop());
             stream = null;
           }
-
-          // Try to access camera
           let targetWidth = 192;
           let targetHeight = 192;
           try {
@@ -668,16 +745,12 @@
             targetWidth = 160;
             targetHeight = 160;
           }
-
           videoElement.srcObject = stream;
           canvasElement.width = targetWidth;
           canvasElement.height = targetHeight;
-
-          // Wait for video to be ready
           await new Promise(resolve => {
             videoElement.onloadedmetadata = () => resolve();
           });
-
           return true;
         } catch (error) {
           console.error(`Error accessing ${facingMode} camera:`, error);
@@ -695,20 +768,19 @@
       }
 
       async function setupWebcam() {
+        if (projectType === "audio") {
+          updateStatus("音訊專案無需使用 Webcam", true);
+          return;
+        }
         try {
-          // Check HTTPS
           if (window.location.protocol !== "https:" && window.location.hostname !== "localhost") {
             updateStatus("Webcam 功能需在 HTTPS 或 localhost 環境運行", true);
             return;
           }
-
-          // Check camera availability
           if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
             updateStatus("此瀏覽器不支援攝影機，請檢查瀏覽器或設備設置", true);
             return;
           }
-
-          // Log available devices
           const devices = await navigator.mediaDevices.enumerateDevices();
           const videoDevices = devices.filter(device => device.kind === 'videoinput');
           console.log("Available video devices:", videoDevices);
@@ -716,60 +788,66 @@
             updateStatus("未找到可用攝影機，請檢查設備", true);
             return;
           }
-
           document.getElementById("webcamBtn").disabled = true;
           document.getElementById("webcamSpinner").style.display = "block";
-
-          // Clear previous webcam content
           const webcamContainer = document.getElementById("webcam-container");
           webcamContainer.innerHTML = "";
-          webcamContainer.appendChild(switchCameraBtn); // Re-append switch button
-
-          // Create video element
-          videoElement = document.createElement("video");
-          videoElement.width = 192;
-          videoElement.height = 192;
-          videoElement.autoplay = true;
-          videoElement.playsinline = true;
-          videoElement.style.display = "none"; // Hide video element
-
-          // Create canvas for model prediction
-          canvasElement = document.createElement("canvas");
-          canvasElement.width = 192;
-          canvasElement.height = 192;
-          const ctx = canvasElement.getContext("2d");
-
-          // Start camera with default facingMode
-          const success = await startCamera(currentFacingMode);
-          if (!success) {
-            document.getElementById("webcamBtn").disabled = false;
-            document.getElementById("webcamSpinner").style.display = "none";
-            return;
+          webcamContainer.appendChild(switchCameraBtn);
+          if (projectType === "image") {
+            videoElement = document.createElement("video");
+            videoElement.width = 192;
+            videoElement.height = 192;
+            videoElement.autoplay = true;
+            videoElement.playsinline = true;
+            videoElement.style.display = "none";
+            canvasElement = document.createElement("canvas");
+            canvasElement.width = 192;
+            canvasElement.height = 192;
+            const success = await startCamera(currentFacingMode);
+            if (!success) {
+              document.getElementById("webcamBtn").disabled = false;
+              document.getElementById("webcamSpinner").style.display = "none";
+              return;
+            }
+            webcamContainer.appendChild(videoElement);
+            webcamContainer.appendChild(canvasElement);
+            labelContainer = document.getElementById("predictions");
+            labelContainer.innerHTML = "";
+            for (let i = 0; i < maxPredictions; i++) {
+              const item = document.createElement("div");
+              item.className = "prediction-item";
+              item.innerHTML = `
+                <span class="prediction-label"></span>
+                <span class="prediction-value"></span>
+                <progress class="prediction-bar" value="0" max="100"></progress>
+              `;
+              labelContainer.appendChild(item);
+            }
+          } else if (projectType === "pose") {
+            canvasElement = document.createElement("canvas");
+            canvasElement.id = "canvas";
+            canvasElement.width = 200;
+            canvasElement.height = 200;
+            ctx = canvasElement.getContext("2d");
+            webcam = new tmPose.Webcam(200, 200, true);
+            await webcam.setup();
+            await webcam.play();
+            webcamContainer.appendChild(canvasElement);
+            labelContainer = document.getElementById("predictions");
+            labelContainer.innerHTML = "";
+            for (let i = 0; i < maxPredictions; i++) {
+              const item = document.createElement("div");
+              item.className = "prediction-item";
+              item.innerHTML = `<span class="prediction-label"></span>`;
+              labelContainer.appendChild(item);
+            }
           }
-
-          webcamContainer.appendChild(videoElement);
-          webcamContainer.appendChild(canvasElement);
-
           updateStatus("Webcam 已成功啟動", false);
           switchCameraBtn.disabled = false;
           switchCameraBtn.innerText = currentFacingMode === "environment" ? "Switch to Front Camera" : "Switch to Rear Camera";
-
           if (model && !isPredicting) {
             window.requestAnimationFrame(loop);
             isPredicting = true;
-          }
-
-          labelContainer = document.getElementById("predictions");
-          labelContainer.innerHTML = ""; // Clear previous predictions
-          for (let i = 0; i < maxPredictions; i++) {
-            const item = document.createElement("div");
-            item.className = "prediction-item";
-            item.innerHTML = `
-              <span class="prediction-label"></span>
-              <span class="prediction-value"></span>
-              <progress class="prediction-bar" value="0" max="100"></progress>
-            `;
-            labelContainer.appendChild(item);
           }
         } catch (error) {
           console.error('Error accessing webcam:', error);
@@ -789,38 +867,42 @@
       }
 
       async function switchCamera() {
+        if (projectType === "audio") return;
         try {
           switchCameraBtn.disabled = true;
           document.getElementById("webcamSpinner").style.display = "block";
-
-          // Toggle facingMode
           currentFacingMode = currentFacingMode === "environment" ? "user" : "environment";
-
-          // Check available cameras
           const devices = await navigator.mediaDevices.enumerateDevices();
           const videoDevices = devices.filter(device => device.kind === 'videoinput');
           console.log("Available video devices for switch:", videoDevices);
           if (videoDevices.length < 2) {
             updateStatus(`無可用${currentFacingMode === "environment" ? "後置" : "前置"}攝影機`, true);
-            currentFacingMode = currentFacingMode === "environment" ? "user" : "environment"; // Revert
+            currentFacingMode = currentFacingMode === "environment" ? "user" : "environment";
             switchCameraBtn.disabled = false;
             document.getElementById("webcamSpinner").style.display = "none";
             return;
           }
-
-          // Start camera with new facingMode
-          const success = await startCamera(currentFacingMode);
-          if (success) {
+          if (projectType === "image") {
+            const success = await startCamera(currentFacingMode);
+            if (success) {
+              switchCameraBtn.innerText = currentFacingMode === "environment" ? "Switch to Front Camera" : "Switch to Rear Camera";
+              updateStatus(`已切換到${currentFacingMode === "environment" ? "後置" : "前置"}攝影機`, false);
+            } else {
+              currentFacingMode = currentFacingMode === "environment" ? "user" : "environment";
+              switchCameraBtn.innerText = currentFacingMode === "environment" ? "Switch to Front Camera" : "Switch to Rear Camera";
+            }
+          } else if (projectType === "pose") {
+            await webcam.stop();
+            webcam = new tmPose.Webcam(200, 200, currentFacingMode === "user");
+            await webcam.setup();
+            await webcam.play();
             switchCameraBtn.innerText = currentFacingMode === "environment" ? "Switch to Front Camera" : "Switch to Rear Camera";
             updateStatus(`已切換到${currentFacingMode === "environment" ? "後置" : "前置"}攝影機`, false);
-          } else {
-            currentFacingMode = currentFacingMode === "environment" ? "user" : "environment"; // Revert
-            switchCameraBtn.innerText = currentFacingMode === "environment" ? "Switch to Front Camera" : "Switch to Rear Camera";
           }
         } catch (error) {
           console.error('Error switching camera:', error);
           updateStatus("切換攝影機失敗: " + error.message, true);
-          currentFacingMode = currentFacingMode === "environment" ? "user" : "environment"; // Revert
+          currentFacingMode = currentFacingMode === "environment" ? "user" : "environment";
           switchCameraBtn.innerText = currentFacingMode === "environment" ? "Switch to Front Camera" : "Switch to Rear Camera";
         } finally {
           switchCameraBtn.disabled = false;
@@ -829,53 +911,74 @@
       }
 
       async function loop() {
-        if (videoElement && model && canvasElement) {
+        if (!isPredicting) return;
+        if (projectType === "image" && videoElement && model && canvasElement) {
           const ctx = canvasElement.getContext("2d");
           ctx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
           await predict();
-        } else {
-          updateStatus("等待 Webcam 或模型初始化...", true);
+        } else if (projectType === "pose" && webcam && model) {
+          webcam.update();
+          await predict();
         }
         window.requestAnimationFrame(loop);
       }
 
       async function predict() {
-        const prediction = await model.predict(canvasElement);
-        let maxProb = 0;
-        let maxIndex = 0;
-        let highestClass = "";
-        for (let i = 0; i < maxPredictions; i++) {
-          const prob = (prediction[i].probability * 100).toFixed(2);
-          const item = labelContainer.childNodes[i];
-          item.querySelector(".prediction-label").innerText = prediction[i].className;
-          item.querySelector(".prediction-value").innerText = `${prob}%`;
-          item.querySelector(".prediction-bar").value = prob;
-          item.classList.toggle("highest", prob > maxProb);
-          if (prob > maxProb) {
-            maxProb = prob;
-            maxIndex = i;
-            highestClass = prediction[i].className;
+        if (projectType === "image") {
+          const prediction = await model.predict(canvasElement);
+          let maxProb = 0;
+          let maxIndex = 0;
+          let highestClass = "";
+          for (let i = 0; i < maxPredictions; i++) {
+            const prob = (prediction[i].probability * 100).toFixed(2);
+            const item = labelContainer.childNodes[i];
+            item.querySelector(".prediction-label").innerText = prediction[i].className;
+            item.querySelector(".prediction-value").innerText = `${prob}%`;
+            item.querySelector(".prediction-bar").value = prob;
+            item.classList.toggle("highest", prob > maxProb);
+            if (prob > maxProb) {
+              maxProb = prob;
+              maxIndex = i;
+              highestClass = prediction[i].className;
+            }
+            if (prediction[i].probability >= 0.995 && prediction[i].className !== lastSentClass) {
+              await sendData(prediction[i].className);
+              lastSentClass = prediction[i].className;
+            }
           }
-          if (prediction[i].probability >= 0.995 && prediction[i].className !== lastSentClass) {
-            await sendData(prediction[i].className);
-            lastSentClass = prediction[i].className;
+          if (isGameMode && maxProb >= 99 && highestClass === currentTarget) {
+            matchCount++;
+            document.getElementById("matchCount").innerText = matchCount;
+            if (matchCount >= matchGoal) {
+              endGame();
+            } else {
+              pickNewTarget();
+              updateStatus("匹配成功！下一目標: " + currentTarget, false);
+            }
           }
-        }
-
-        // Game logic
-        if (isGameMode && maxProb >= 99 && highestClass === currentTarget) {
-          matchCount++;
-          document.getElementById("matchCount").innerText = matchCount;
-          if (matchCount >= matchGoal) {
-            endGame();
-          } else {
-            pickNewTarget();
-            updateStatus("匹配成功！下一目標: " + currentTarget, false);
+        } else if (projectType === "pose") {
+          const { pose, posenetOutput } = await model.estimatePose(webcam.canvas);
+          const prediction = await model.predict(posenetOutput);
+          for (let i = 0; i < maxPredictions; i++) {
+            const classPrediction = `${prediction[i].className}: ${(prediction[i].probability * 100).toFixed(2)}%`;
+            labelContainer.childNodes[i].querySelector(".prediction-label").innerText = classPrediction;
+          }
+          if (webcam.canvas) {
+            ctx.drawImage(webcam.canvas, 0, 0);
+            if (pose) {
+              const minPartConfidence = 0.5;
+              tmPose.drawKeypoints(pose.keypoints, minPartConfidence, ctx);
+              tmPose.drawSkeleton(pose.keypoints, minPartConfidence, ctx);
+            }
           }
         }
       }
 
       function startGame() {
+        if (projectType !== "image") {
+          updateStatus("遊戲僅支援圖像專案", true);
+          return;
+        }
         if (classNames.length === 0) {
           updateStatus("請先載入模型", true);
           return;
