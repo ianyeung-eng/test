@@ -43,10 +43,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Interactive Micro:bit Web App</title>
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.18.0/dist/tf.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.3.1/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@0.8/dist/teachablemachine-image.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/speech-commands@0.4.0/dist/speech-commands.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/posenet@2.2.2/dist/posenet.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/pose@0.8/dist/teachablemachine-pose.min.js"></script>
     <style>
       body {
         font-family: 'Segoe UI', Arial, sans-serif;
@@ -412,14 +412,10 @@
       let uBitDevice;
       let rxCharacteristic;
       let serialPort;
-      let model, posenetModel, labelContainer, maxPredictions, lastSentClass = null;
+      let model, webcam, labelContainer, maxPredictions, lastSentClass = null;
       let isPredicting = false;
-      let videoElement = null;
-      let canvasElement = null;
-      let stream = null;
-      let currentFacingMode = "environment";
-      let projectType = "image";
       let ctx = null;
+      let currentFacingMode = "environment";
 
       // Game variables
       let isGameMode = false;
@@ -639,13 +635,12 @@
           if (projectType === "audio" && model && model.stopListening) {
             model.stopListening();
           }
-          if (stream) {
-            stream.getTracks().forEach(track => track.stop());
-            stream = null;
+          if (webcam) {
+            webcam.stop();
+            webcam = null;
           }
         }
         model = null;
-        posenetModel = null;
         lastSentClass = null;
         classNames = [];
         document.getElementById("predictions").innerHTML = "";
@@ -704,13 +699,11 @@
             });
             isPredicting = true;
           } else if (projectType === "pose") {
-            model = await tf.loadLayersModel(modelUrl);
-            const metadata = await (await fetch(metadataUrl)).json();
-            classNames = metadata.labels || [];
-            maxPredictions = classNames.length;
-            posenetModel = await posenet.load();
-            console.log('Pose model and PoseNet loaded, classes:', classNames);
-            updateStatus("姿勢模型和 PoseNet 已成功載入", false);
+            model = await tmPose.load(modelUrl, metadataUrl);
+            maxPredictions = model.getTotalClasses();
+            classNames = model.getClassLabels();
+            console.log('Pose model loaded, classes:', classNames);
+            updateStatus("姿勢模型已成功載入", false);
             document.getElementById("webcamBtn").disabled = false;
             document.getElementById("startGameBtn").disabled = false;
           }
@@ -720,56 +713,6 @@
         } finally {
           document.getElementById("loadModelBtn").disabled = false;
           document.getElementById("modelSpinner").style.display = "none";
-        }
-      }
-
-      async function startCamera(facingMode) {
-        try {
-          if (stream) {
-            stream.getTracks().forEach(track => track.stop());
-            stream = null;
-          }
-          let targetWidth = 192;
-          let targetHeight = 192;
-          try {
-            stream = await navigator.mediaDevices.getUserMedia({
-              video: { 
-                facingMode: facingMode,
-                width: { ideal: 192 },
-                height: { ideal: 192 }
-              }
-            });
-          } catch (error) {
-            console.warn(`Failed to access ${facingMode} camera, trying lower resolution:`, error);
-            stream = await navigator.mediaDevices.getUserMedia({
-              video: { 
-                facingMode: facingMode,
-                width: { ideal: 160 },
-                height: { ideal: 160 }
-              }
-            });
-            targetWidth = 160;
-            targetHeight = 160;
-          }
-          videoElement.srcObject = stream;
-          canvasElement.width = targetWidth;
-          canvasElement.height = targetHeight;
-          await new Promise(resolve => {
-            videoElement.onloadedmetadata = () => resolve();
-          });
-          return true;
-        } catch (error) {
-          console.error(`Error accessing ${facingMode} camera:`, error);
-          let errorMessage = `切換到${facingMode === "environment" ? "後置" : "前置"}攝影機失敗: ${error.message}`;
-          if (error.name === "NotAllowedError") {
-            errorMessage = "Webcam 啟動失敗: 請允許攝影機權限";
-          } else if (error.name === "NotFoundError") {
-            errorMessage = `無可用${facingMode === "environment" ? "後置" : "前置"}攝影機`;
-          } else if (error.name === "NotReadableError") {
-            errorMessage = "Webcam 啟動失敗: 攝影機被其他應用程式佔用";
-          }
-          updateStatus(errorMessage, true);
-          return false;
         }
       }
 
@@ -799,24 +742,15 @@
           const webcamContainer = document.getElementById("webcam-container");
           webcamContainer.innerHTML = "";
           webcamContainer.appendChild(switchCameraBtn);
-          videoElement = document.createElement("video");
-          videoElement.width = 192;
-          videoElement.height = 192;
-          videoElement.autoplay = true;
-          videoElement.playsinline = true;
-          videoElement.style.display = "none";
-          canvasElement = document.createElement("canvas");
+          const canvasElement = document.createElement("canvas");
           canvasElement.width = 192;
           canvasElement.height = 192;
-          ctx = canvasElement.getContext("2d");
-          const success = await startCamera(currentFacingMode);
-          if (!success) {
-            document.getElementById("webcamBtn").disabled = false;
-            document.getElementById("webcamSpinner").style.display = "none";
-            return;
-          }
-          webcamContainer.appendChild(videoElement);
           webcamContainer.appendChild(canvasElement);
+          ctx = canvasElement.getContext("2d");
+          const flip = currentFacingMode === "user";
+          webcam = new tmPose.Webcam(192, 192, flip);
+          await webcam.setup();
+          await webcam.play();
           labelContainer = document.getElementById("predictions");
           labelContainer.innerHTML = "";
           for (let i = 0; i < maxPredictions; i++) {
@@ -833,8 +767,8 @@
           switchCameraBtn.disabled = false;
           switchCameraBtn.innerText = currentFacingMode === "environment" ? "Switch to Front Camera" : "Switch to Rear Camera";
           if (model && !isPredicting) {
-            window.requestAnimationFrame(loop);
             isPredicting = true;
+            window.requestAnimationFrame(loop);
           }
         } catch (error) {
           console.error('Error accessing webcam:', error);
@@ -869,14 +803,15 @@
             document.getElementById("webcamSpinner").style.display = "none";
             return;
           }
-          const success = await startCamera(currentFacingMode);
-          if (success) {
-            switchCameraBtn.innerText = currentFacingMode === "environment" ? "Switch to Front Camera" : "Switch to Rear Camera";
-            updateStatus(`已切換到${currentFacingMode === "environment" ? "後置" : "前置"}攝影機`, false);
-          } else {
-            currentFacingMode = currentFacingMode === "environment" ? "user" : "environment";
-            switchCameraBtn.innerText = currentFacingMode === "environment" ? "Switch to Front Camera" : "Switch to Rear Camera";
+          if (webcam) {
+            webcam.stop();
           }
+          const flip = currentFacingMode === "user";
+          webcam = new tmPose.Webcam(192, 192, flip);
+          await webcam.setup();
+          await webcam.play();
+          switchCameraBtn.innerText = currentFacingMode === "environment" ? "Switch to Front Camera" : "Switch to Rear Camera";
+          updateStatus(`已切換到${currentFacingMode === "environment" ? "後置" : "前置"}攝影機`, false);
         } catch (error) {
           console.error('Error switching camera:', error);
           updateStatus("切換攝影機失敗: " + error.message, true);
@@ -890,8 +825,10 @@
 
       async function loop() {
         if (!isPredicting) return;
-        if ((projectType === "image" || projectType === "pose") && videoElement && model && canvasElement) {
-          ctx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
+        if ((projectType === "image" || projectType === "pose") && model && webcam) {
+          if (projectType === "pose") {
+            webcam.update();
+          }
           await predict();
         }
         window.requestAnimationFrame(loop);
@@ -900,7 +837,7 @@
       async function predict() {
         try {
           if (projectType === "image") {
-            const prediction = await model.predict(canvasElement);
+            const prediction = await model.predict(webcam.canvas);
             let maxProb = 0;
             let maxIndex = 0;
             let highestClass = "";
@@ -932,43 +869,33 @@
               }
             }
           } else if (projectType === "pose") {
-            if (!posenetModel) {
-              updateStatus("PoseNet 模型未載入", true);
-              return;
-            }
-            const pose = await posenetModel.estimateSinglePose(canvasElement, {
-              flipHorizontal: currentFacingMode === "user"
-            });
-            const imageTensor = tf.browser.fromPixels(canvasElement);
-            const resizedTensor = tf.image.resizeBilinear(imageTensor, [224, 224]);
-            const normalizedTensor = resizedTensor.div(255.0);
-            const prediction = await model.predict(normalizedTensor);
+            const { pose, posenetOutput } = await model.estimatePose(webcam.canvas);
+            const prediction = await model.predict(posenetOutput);
             let maxProb = 0;
             let maxIndex = 0;
             let highestClass = "";
             for (let i = 0; i < maxPredictions; i++) {
-              const prob = (prediction.dataSync()[i] * 100).toFixed(2);
+              const prob = (prediction[i].probability * 100).toFixed(2);
               const item = labelContainer.childNodes[i];
-              item.querySelector(".prediction-label").innerText = classNames[i];
+              item.querySelector(".prediction-label").innerText = prediction[i].className;
               item.querySelector(".prediction-value").innerText = `${prob}%`;
               item.querySelector(".prediction-bar").value = prob;
               item.classList.toggle("highest", prob > maxProb);
               if (prob > maxProb) {
                 maxProb = prob;
                 maxIndex = i;
-                highestClass = classNames[i];
+                highestClass = prediction[i].className;
               }
-              if (parseFloat(prob) >= 99.5 && classNames[i] !== lastSentClass) {
-                await sendData(classNames[i]);
-                lastSentClass = classNames[i];
+              if (prediction[i].probability >= 0.995 && prediction[i].className !== lastSentClass) {
+                await sendData(prediction[i].className);
+                lastSentClass = prediction[i].className;
               }
             }
-            tf.dispose([imageTensor, resizedTensor, normalizedTensor, prediction]);
-            if (canvasElement && ctx && pose) {
-              ctx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
+            if (webcam.canvas && ctx && pose) {
+              ctx.drawImage(webcam.canvas, 0, 0);
               const minPartConfidence = 0.5;
-              drawKeypoints(pose.keypoints, minPartConfidence, ctx);
-              drawSkeleton(pose.keypoints, minPartConfidence, ctx);
+              tmPose.drawKeypoints(pose.keypoints, minPartConfidence, ctx);
+              tmPose.drawSkeleton(pose.keypoints, minPartConfidence, ctx);
             }
             if (isGameMode && maxProb >= 99 && highestClass === currentTarget) {
               matchCount++;
@@ -985,40 +912,6 @@
           console.error('Prediction error:', error);
           updateStatus("預測錯誤: " + error.message, true);
         }
-      }
-
-      // Keypoint and skeleton drawing functions for PoseNet
-      function drawKeypoints(keypoints, minConfidence, ctx) {
-        keypoints.forEach(keypoint => {
-          if (keypoint.score >= minConfidence) {
-            const { y, x } = keypoint.position;
-            ctx.beginPath();
-            ctx.arc(x, y, 3, 0, 2 * Math.PI);
-            ctx.fillStyle = '#ff0000';
-            ctx.fill();
-          }
-        });
-      }
-
-      function drawSkeleton(keypoints, minConfidence, ctx) {
-        const adjacentKeyPoints = [
-          ['leftHip', 'leftShoulder'], ['leftElbow', 'leftShoulder'], ['leftElbow', 'leftWrist'],
-          ['rightHip', 'rightShoulder'], ['rightElbow', 'rightShoulder'], ['rightElbow', 'rightWrist'],
-          ['leftHip', 'rightHip'], ['leftShoulder', 'rightShoulder'], ['leftHip', 'leftKnee'],
-          ['leftKnee', 'leftAnkle'], ['rightHip', 'rightKnee'], ['rightKnee', 'rightAnkle']
-        ];
-        adjacentKeyPoints.forEach(([part1, part2]) => {
-          const kp1 = keypoints.find(k => k.part === part1);
-          const kp2 = keypoints.find(k => k.part === part2);
-          if (kp1 && kp2 && kp1.score >= minConfidence && kp2.score >= minConfidence) {
-            ctx.beginPath();
-            ctx.moveTo(kp1.position.x, kp1.position.y);
-            ctx.lineTo(kp2.position.x, kp2.position.y);
-            ctx.strokeStyle = '#00ff00';
-            ctx.lineWidth = 2;
-            ctx.stroke();
-          }
-        });
       }
 
       function startGame() {
